@@ -1,6 +1,6 @@
-# DesktopSMS Lite Local Pairing Authorization Bypass
+# DesktopSMS Lite Allows Any Installed App With No Phone Permissions to Send and Receive Arbitrary SMS Messages via Local Pairing Authorization Bypass
 
-> **An unprivileged Android application with only `INTERNET` can forge DesktopSMS Lite pairing approval, then use DesktopSMS Lite as a privileged SMS proxy to send SMS and retrieve SMS-derived conversation content without `SEND_SMS` or `READ_SMS`.**
+> **An unprivileged Android application with only `INTERNET` can forge DesktopSMS Lite pairing approval, then use DesktopSMS Lite as a privileged SMS proxy to send SMS and retrieve SMS conversation content without `SEND_SMS` or `READ_SMS`.**
 
 **Product:** DesktopSMS Lite for Android (`net.mrpear.apps.desktopsmslite`)  
 **Tested version:** `1.11.0` (`versionCode 49`)  
@@ -10,9 +10,9 @@
 
 ## Summary
 
-DesktopSMS Lite contains a local pairing authorization flaw. A second Android application can forge a successful pairing result for an attacker-selected identity and then reach privileged SMS functionality exposed through DesktopSMS Lite.
+DesktopSMS Lite contains a local pairing authorization flaw that allows **any installed Android application with only `INTERNET` permission** to forge a successful pairing result and reach privileged SMS functionality.
 
-The helper used for validation requested only:
+The validation helper requested only:
 
 ```xml
 <uses-permission android:name="android.permission.INTERNET" />
@@ -22,22 +22,24 @@ It requested **no `SEND_SMS` or `READ_SMS` permission**.
 
 The demonstrated chain allows the helper to:
 
-- forge pairing approval for a fresh `DeviceGuid`;
-- **send attacker-controlled SMS through DesktopSMS Lite's privileges**;
-- **retrieve SMS-derived conversation content through DesktopSMS Lite's query interface**; and
+- forge pairing approval for a fresh attacker-controlled `DeviceGuid`;
+- **send attacker-controlled SMS through DesktopSMS Lite without `SEND_SMS`;**
+- **retrieve SMS conversation content through DesktopSMS Lite without `READ_SMS`;** and
 - persist the attacker-selected paired identity.
+
+The result is that an otherwise unprivileged installed application can use DesktopSMS Lite as a **privileged SMS proxy for both sending messages and accessing received SMS content**.
 
 ## Proof of Concept
 
-<img width="1996" height="1416" alt="image" src="https://github.com/actuator/net.mrpear.apps.desktopsmslite/blob/main/DESKTOPSMS_poc.gif?raw=true" />
+<img width="1996" height="1416" alt="DesktopSMS Lite pairing bypass PoC" src="https://github.com/actuator/net.mrpear.apps.desktopsmslite/blob/main/DESKTOPSMS_poc.gif?raw=true" />
 
+[View the PoC GIF directly](https://github.com/actuator/net.mrpear.apps.desktopsmslite/blob/main/DESKTOPSMS_poc.gif?raw=true)
 
 > **Google Voice demo note:** The message popup visible in the recording is from **Google Voice**. I sent the PoC SMS to **my own Google Voice number** so I could independently confirm successful receipt. The popup is external delivery confirmation on an account I control; it is **not** a DesktopSMS Lite UI artifact.
 
-
 ## Demonstrated Impact
 
-### Arbitrary SMS sending without `SEND_SMS`
+### Arbitrary SMS Sending Without `SEND_SMS`
 
 After the forged pair is accepted, the helper invokes:
 
@@ -45,11 +47,20 @@ After the forged pair is accepted, the helper invokes:
 sendsms.dsms.cmd.icl
 ```
 
-DesktopSMS Lite submits the attacker-controlled message using its own SMS privileges. In the PoC, `POC TXT` was sent successfully with `StatusCode 0`, while the helper held no `SEND_SMS` permission.
+DesktopSMS Lite sends the attacker-controlled message using its own SMS privileges.
 
-The Google Voice notification shown in the demo independently confirms that the test SMS reached the researcher-controlled destination.
+In the PoC:
 
-### SMS content access without `READ_SMS`
+```text
+POC TXT
+StatusCode 0
+```
+
+was successfully sent while the helper held **no `SEND_SMS` permission**.
+
+The Google Voice notification shown in the demo independently confirms that the SMS reached the researcher-controlled destination.
+
+### SMS Content Access Without `READ_SMS`
 
 The same forged identity invokes:
 
@@ -57,11 +68,23 @@ The same forged identity invokes:
 search-conversations-request.dsms.cmd.icl
 ```
 
-DesktopSMS Lite returns SMS-derived conversation content to the helper. The PoC retrieved `POC TXT` even though the helper held no `READ_SMS` permission.
+DesktopSMS Lite returns SMS-derived conversation content to the helper.
 
-### Persistent attacker-controlled pairing
+The PoC retrieved:
 
-The attacker supplies a fresh `DeviceGuid`. Once the forged approval is accepted, that identity is treated as paired and can reach the privileged command surface.
+```text
+POC TXT
+```
+
+even though the helper held **no `READ_SMS` permission**.
+
+This allows an installed application that cannot directly read SMS under Android's permission model to obtain SMS content through DesktopSMS Lite instead.
+
+### Persistent Attacker-Controlled Pairing
+
+The attacker supplies a fresh `DeviceGuid`.
+
+Once the forged approval is accepted, that attacker-selected identity is treated as paired and can access the privileged command surface.
 
 ## Attack Chain
 
@@ -69,6 +92,8 @@ The attacker supplies a fresh `DeviceGuid`. Once the forged approval is accepted
 Unprivileged Android app
         |
         | INTERNET only
+        | no SEND_SMS
+        | no READ_SMS
         v
 127.0.0.1:8000
 DesktopSMS Lite local service
@@ -90,38 +115,42 @@ sendsms.dsms.cmd.icl          search-conversations-request.dsms.cmd.icl
 SMS sent without SEND_SMS     SMS content returned without READ_SMS
 ```
 
-The attacker never obtains Android SMS permissions directly. DesktopSMS Lite performs the privileged operations on the attacker's behalf after the pairing boundary is bypassed.
+The attacker never obtains Android SMS permissions directly. DesktopSMS Lite performs the privileged SMS operations on the attacker's behalf after the pairing authorization boundary is bypassed.
 
 ## Scope and Required Conditions
 
-DesktopSMS Lite must already be configured and its local service must be running. Once active, the demonstrated flow requires:
+DesktopSMS Lite must already be configured and its local service must be running.
 
+Once active, the demonstrated flow requires:
+
+- only the normal `INTERNET` permission;
 - no pairing confirmation;
-- no `SEND_SMS` permission in the helper;
-- no `READ_SMS` permission in the helper; and
+- no `SEND_SMS`;
+- no `READ_SMS`; and
 - no additional user interaction during exploitation.
 
-This disclosure demonstrates **same-device loopback exploitation** against `127.0.0.1:8000`. It does **not** claim WAN reachability.
-
+This disclosure demonstrates **same-device loopback exploitation** against `127.0.0.1:8000`
 ## Reproduction
 
-1. Configure DesktopSMS Lite 1.11.0 (`versionCode 49`) on an authorized test phone and start its local service.
+1. Configure DesktopSMS Lite `1.11.0` (`versionCode 49`) on an authorized test phone and start its local service.
 2. Install the same-device helper whose manifest declares `INTERNET` only.
 3. Run the PoC after confirming the controlled SMS destination ending in `6567`.
-4. The helper connects to `127.0.0.1:8000` and submits a fresh `DeviceGuid`.
+4. The helper connects to `127.0.0.1:8000` and submits a fresh attacker-controlled `DeviceGuid`.
 5. The helper sends `net.mrpear.libs.intercomlib.COM_PAIR_REQUEST_RESULT` with `result=true`.
 6. DesktopSMS Lite accepts the forged pair.
 7. The helper invokes `sendsms.dsms.cmd.icl`, causing DesktopSMS Lite to send `POC TXT`.
-8. The helper invokes `search-conversations-request.dsms.cmd.icl`, and DesktopSMS Lite returns SMS-derived content.
+8. The SMS is received by the researcher-controlled Google Voice destination.
+9. The helper invokes `search-conversations-request.dsms.cmd.icl`.
+10. DesktopSMS Lite returns SMS-derived content despite the helper holding no `READ_SMS`.
 
 ## Observed Results
 
 | Stage | Observed Result | Security Meaning |
 |---|---|---|
 | Pair | Forged approval accepted | Attacker-selected identity becomes paired |
-| Send | `StatusCode 0` | SMS submitted without helper holding `SEND_SMS` |
+| Send | `StatusCode 0` | SMS sent without helper holding `SEND_SMS` |
 | Delivery | Google Voice received `POC TXT` | Independent confirmation of actual SMS receipt |
-| Read | `POC TXT` returned | SMS-derived content exposed without helper holding `READ_SMS` |
+| Read | `POC TXT` returned | SMS content exposed without helper holding `READ_SMS` |
 | Persistence | Attacker-selected `DeviceGuid` accepted | Attacker controls the paired identity |
 
 ## Root Cause
@@ -135,9 +164,9 @@ net.mrpear.libs.intercomlib.COM_PAIR_REQUEST_RESULT
 result=true
 ```
 
-for an attacker-selected identity. Once accepted, that identity can reach DesktopSMS Lite's privileged SMS commands.
+for an attacker-selected identity.
 
-The vulnerable trust transition is:
+Once accepted, that identity can access DesktopSMS Lite's privileged SMS commands, allowing SMS transmission and SMS content retrieval without the attacking application holding Android's corresponding SMS permissions.
 
 ```text
 Untrusted local app
@@ -151,16 +180,12 @@ Privileged SMS send / read functionality
 ```
 
 ## Recommended Remediation
+>**CWE-306 - Missing Authentication for Critical Function**
 
+- Make the pairing-result receiver non-exported where external access is unnecessary.
 - Replace externally forgeable pairing-result broadcasts with an app-private callback.
 - Bind pairing approval to a cryptographically unpredictable, single-use nonce.
 - Authenticate local service sessions and bind them to the approved pairing transaction.
-- Reauthorize sensitive commands such as SMS send and conversation retrieval at the command boundary.
+- Reauthorize sensitive commands such as SMS send and conversation retrieval.
 - Do not treat possession of a user-supplied `DeviceGuid` as proof of authorization.
-
-
-## Weakness Classification
-
-- **CWE-306 - Missing Authentication for Critical Function**
-- **CWE-862 - Missing Authorization**
 
