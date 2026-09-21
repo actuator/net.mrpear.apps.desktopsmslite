@@ -1,4 +1,4 @@
-# DesktopSMS Lite Allows Any Installed App With No Phone Permissions to Send and Receive Arbitrary SMS Messages via Local Pairing Authorization Bypass
+# DesktopSMS Lite Allows Any Installed App With No CALL or SMS Permissions to Send and Receive Arbitrary SMS Messages via Local Pairing Authorization Bypass
 
 > **An unprivileged Android application with only `INTERNET` can forge DesktopSMS Lite pairing approval, then use DesktopSMS Lite as a privileged SMS proxy to send SMS and retrieve SMS conversation content without `SEND_SMS` or `READ_SMS`.**
 
@@ -10,13 +10,15 @@
 
 ## Summary
 
-DesktopSMS Lite contains a local pairing authorization flaw that allows **any installed Android application with only `INTERNET` permission** to forge a successful pairing result and reach privileged SMS functionality.
+DesktopSMS Lite contains a local pairing authorization flaw that allows **any installed Android application with only the normal `INTERNET` permission** to forge a successful pairing result and reach privileged SMS functionality.
 
 The validation helper requested only:
 
 ```xml
 <uses-permission android:name="android.permission.INTERNET" />
 ```
+
+Android classifies `INTERNET` as a **normal** permission, not a dangerous/runtime permission. Normal permissions are granted automatically at install time when declared in the manifest and do not trigger the runtime permission prompt used for dangerous permissions. In practical terms, the helper does not need the user to approve any phone or SMS capability before reaching the vulnerable local interface.
 
 It requested **no `SEND_SMS` or `READ_SMS` permission**.
 
@@ -123,13 +125,15 @@ DesktopSMS Lite must already be configured and its local service must be running
 
 Once active, the demonstrated flow requires:
 
-- only the normal `INTERNET` permission;
+- an installed Android application;
+- only the normal `INTERNET` permission, which Android grants at install time without a runtime dangerous-permission prompt;
 - no pairing confirmation;
 - no `SEND_SMS`;
 - no `READ_SMS`; and
 - no additional user interaction during exploitation.
 
-This disclosure demonstrates **same-device loopback exploitation** against `127.0.0.1:8000`
+This disclosure demonstrates **same-device loopback exploitation** against `127.0.0.1:8000`. It does **not** claim WAN reachability.
+
 ## Reproduction
 
 1. Configure DesktopSMS Lite `1.11.0` (`versionCode 49`) on an authorized test phone and start its local service.
@@ -180,12 +184,15 @@ Privileged SMS send / read functionality
 ```
 
 ## Recommended Remediation
->**CWE-306 - Missing Authentication for Critical Function**
 
-- Make the pairing-result receiver non-exported where external access is unnecessary.
-- Replace externally forgeable pairing-result broadcasts with an app-private callback.
-- Bind pairing approval to a cryptographically unpredictable, single-use nonce.
-- Authenticate local service sessions and bind them to the approved pairing transaction.
-- Reauthorize sensitive commands such as SMS send and conversation retrieval.
-- Do not treat possession of a user-supplied `DeviceGuid` as proof of authorization.
+- Make the pairing-result receiver non-exported where external access is unnecessary
+- Replace externally forgeable pairing-result broadcasts with an app-private callback
+- Bind pairing approval to a cryptographically unpredictable, single-use nonce
+- Authenticate local service sessions and bind them to the approved pairing transaction
+- Reauthorize sensitive commands such as SMS send and conversation retrieval
+- Do not treat possession of a user-supplied `DeviceGuid` as proof of authorization
 
+
+## Weakness Classification
+
+- **CWE-306 - Missing Authentication for Critical Function**
