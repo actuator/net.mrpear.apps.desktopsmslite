@@ -1,193 +1,166 @@
+# DesktopSMS Lite Local Pairing Authorization Bypass
 
-# Desktop SMS Lite for Android PC Sync API allows remote network adjacent unauthenticated attackers to send and read arbitrary SMS messages
+> **An unprivileged Android application with only `INTERNET` can forge DesktopSMS Lite pairing approval, then use DesktopSMS Lite as a privileged SMS proxy to send SMS and retrieve SMS-derived conversation content without `SEND_SMS` or `READ_SMS`.**
 
-**Vulnerability Report**  
-**Vendor:** Zerogic Inc.  
-**Product:** SMS Forwarder for Android (`com.frzinapps.smsforward`)  
-**Affected Version:** 10.08.06 (versionCode 20257)  
-**Report Date:** 10 September 2026 UTC  
-**Reporter:** Edward "Actuator" Warren  
-**VulnCheck ID:** 5a61c617-2ea7-4ac3-aaf7-6a894897319a  
-**Severity:** High  
-**CVSS v3.1:** 8.1 (`AV:A/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N`)
+**Product:** DesktopSMS Lite for Android (`net.mrpear.apps.desktopsmslite`)  
+**Tested version:** `1.11.0` (`versionCode 49`)  
+**Attack surface:** Same-device loopback service at `127.0.0.1:8000`  
+**VulnCheck ID:** `1cb652c2-d4f9-4f26-bc93-0a0afc201864`  
+**Reporter:** Edward "Actuator" Warren
 
 ## Summary
 
-The PC Sync feature of SMS Forwarder for Android opens a cleartext HTTP service on a wildcard socket and exposes message-read and message-send commands **without pairing, authentication, or per-request authorization**.
+DesktopSMS Lite contains a local pairing authorization flaw. A second Android application can forge a successful pairing result for an attacker-selected identity and then reach privileged SMS functionality exposed through DesktopSMS Lite.
 
-An adjacent LAN client can read SMS data and cause a controlled SMS to be sent. Any Android app holding only the `INTERNET` permission can also retrieve SMS conversation data via `127.0.0.1`, creating a same-device cross-application privilege bridge.
+The helper used for validation requested only:
 
-Once PC Sync is enabled, the unauthenticated HTTP API remains reachable even while the device is locked. No pairing, credential, session, or on-device approval is required.
+```xml
+<uses-permission android:name="android.permission.INTERNET" />
+```
 
-## Affected Component
+It requested **no `SEND_SMS` or `READ_SMS` permission**.
 
-- **Feature:** View and Reply on PC (PC Sync)
-- **Primary Endpoint:** HTTP `/getData` (default TCP port 8888)
-- **Primary Weakness:** Missing Authentication for Critical Function
-- **Primary CWE:** [CWE-306](https://cwe.mitre.org/data/definitions/306.html) – Missing Authentication for Critical Function
-- **Related CWEs:** CWE-862 (Missing Authorization), CWE-319 (Cleartext Transmission of Sensitive Information)
+The demonstrated chain allows the helper to:
 
-## Technical Analysis
+- forge pairing approval for a fresh `DeviceGuid`;
+- **send attacker-controlled SMS through DesktopSMS Lite's privileges**;
+- **retrieve SMS-derived conversation content through DesktopSMS Lite's query interface**; and
+- persist the attacker-selected paired identity.
 
-### Listener Boundary
+## Proof of Concept
 
-`PCSyncService.S` selects TCP port 8888 (or a nearby available port) and starts an embedded NanoHTTPD implementation. A null hostname is passed into `kj.e.U`, resulting in a wildcard bind (`*:8888`) rather than a bind restricted to the Wi-Fi address shown in the UI.
+<img width="1996" height="1416" alt="image" src="https://github.com/actuator/net.mrpear.apps.desktopsmslite/blob/main/DESKTOPSMS_poc.gif?raw=true" />
 
-The service is reachable via the displayed IPv4 Wi-Fi address **and** via `127.0.0.1`.
 
-### Unauthenticated Command Dispatch
+> **Google Voice demo note:** The message popup visible in the recording is from **Google Voice**. I sent the PoC SMS to **my own Google Voice number** so I could independently confirm successful receipt. The popup is external delivery confirmation on an account I control; it is **not** a DesktopSMS Lite UI artifact.
 
-`kj.e.H` handles `/getData`, extracts the caller-controlled `command` parameter, and passes it directly to `e4.d.e`. No password, pairing key, bearer token, session cookie, client certificate, source-address allowlist, or Android caller identity is checked.
 
-| Command          | Behavior                                              | Security Boundary Crossed              |
-|------------------|-------------------------------------------------------|----------------------------------------|
-| `getdualsim`     | Returns SIM metadata                                  | Low-sensitivity reachability           |
-| `getchatlist`    | Returns thread ID, address, display name, latest body, date, read state | SMS confidentiality                    |
-| `getchatmessages`| Returns message type, body, and date for a selected thread | Message-history confidentiality        |
-| `sendmessage`    | Accepts destination, body, and SIM slot; enters normal outbound pipeline | SMS integrity / possible cost          |
-| `checkchanged`   | Waits for change state                                | Unauthenticated long-poll resource use |
+## Demonstrated Impact
 
-### Privileged Data & Send Paths
+### Arbitrary SMS sending without `SEND_SMS`
 
-Conversation and message commands obtain data from Android Telephony SMS/MMS providers (and Samsung RCS providers where available). The caller receives data its own Android permissions would not allow it to read.
+After the forged pair is accepted, the helper invokes:
 
-The `sendmessage` path constructs a `SendNode`, persists it, and reaches `SmsManager.sendTextMessage` / `sendMultipartTextMessage` through the application’s normal outbound pipeline.
+```text
+sendsms.dsms.cmd.icl
+```
 
-### Transport
+DesktopSMS Lite submits the attacker-controlled message using its own SMS privileges. In the PoC, `POC TXT` was sent successfully with `StatusCode 0`, while the helper held no `SEND_SMS` permission.
 
-The feature advertises an `http://` URL. Responses are Base64-encoded and returned as `text/plain`. Base64 provides reversible encoding only — not encryption, integrity, or peer authentication.
+The Google Voice notification shown in the demo independently confirms that the test SMS reached the researcher-controlled destination.
 
-### Key Code Locations
+### SMS content access without `READ_SMS`
 
-- `PCSyncService.S`
-- `kj.e.U`
-- `kj.b$r.run`
-- `kj.e.H`
-- `e4.d.e`
-- `e4.d.h`
-- `e4.d.i`
-- `e4.d.l`
-- `z3.m.d`
+The same forged identity invokes:
 
-## Dynamic Evidence
+```text
+search-conversations-request.dsms.cmd.icl
+```
 
-| ID | Source                  | Result |
-|----|-------------------------|--------|
-| D1 | LAN browser             | PC Sync UI exposed real conversation previews over HTTP on the phone’s Wi-Fi address |
-| D2 | Burp capture            | `POST /getData` with `getchatmessages` returned HTTP 200 with no Authorization or Cookie headers; Base64 response decoded to JSON |
-| D3 | Controlled send         | Unauthenticated `sendmessage` request caused a generated marker to reach a researcher-controlled destination |
-| D4 | Socket inspection       | `ss` showed `LISTEN` on `*:8888` while PC Sync was active |
-| D5 | Loopback transport      | ADB shell TCP probe to `127.0.0.1:8888` returned success |
-| D6 | Ordinary Android app    | Helper app requesting only `INTERNET` called `getchatlist` via `127.0.0.1` and received 10 conversation records (HTTP 200) |
-| D7 | Negative boundary       | No application-driven NAT traversal, relay, or tunnel found; public WAN reachability not established |
+DesktopSMS Lite returns SMS-derived conversation content to the helper. The PoC retrieved `POC TXT` even though the helper held no `READ_SMS` permission.
 
-### Same-Device Evidence Record
+### Persistent attacker-controlled pairing
 
-- **Endpoint:** `http://127.0.0.1:8888`
-- **Command:** `getchatlist` (`pageKey=0`, `pageSize=10`)
-- **HTTP Result:** 200
-- **Authorization:** None (no Authorization header, no session cookie)
-- **Wire Response:** 2764 bytes (SHA-256: `4022aa64044bc371fd68b2dbf108a26a924f87d9cc185edb66a299e6d8061e21`)
-- **Decoded Response:** 2071 bytes (SHA-256: `7db5559ca26acdf6e47b3cc400267abc5346ebf828cd74fa53022d033a32c368`)
-- **Returned Records:** 10 conversation objects (pseudonymized)
-- **Elapsed Time:** 33 ms
+The attacker supplies a fresh `DeviceGuid`. Once the forged approval is accepted, that identity is treated as paired and can reach the privileged command surface.
 
-> The `I_AM_AUTHORIZED` phrase used by the helper is a researcher safety control only. It is **not** transmitted to or validated by PC Sync.
+## Attack Chain
+
+```text
+Unprivileged Android app
+        |
+        | INTERNET only
+        v
+127.0.0.1:8000
+DesktopSMS Lite local service
+        |
+        | attacker-selected DeviceGuid
+        v
+COM_PAIR_REQUEST_RESULT
+result=true
+        |
+        v
+Forged identity accepted as paired
+        |
+        +-------------------------------+
+        |                               |
+        v                               v
+sendsms.dsms.cmd.icl          search-conversations-request.dsms.cmd.icl
+        |                               |
+        v                               v
+SMS sent without SEND_SMS     SMS content returned without READ_SMS
+```
+
+The attacker never obtains Android SMS permissions directly. DesktopSMS Lite performs the privileged operations on the attacker's behalf after the pairing boundary is bypassed.
+
+## Scope and Required Conditions
+
+DesktopSMS Lite must already be configured and its local service must be running. Once active, the demonstrated flow requires:
+
+- no pairing confirmation;
+- no `SEND_SMS` permission in the helper;
+- no `READ_SMS` permission in the helper; and
+- no additional user interaction during exploitation.
+
+This disclosure demonstrates **same-device loopback exploitation** against `127.0.0.1:8000`. It does **not** claim WAN reachability.
 
 ## Reproduction
 
-**Preconditions**
+1. Configure DesktopSMS Lite 1.11.0 (`versionCode 49`) on an authorized test phone and start its local service.
+2. Install the same-device helper whose manifest declares `INTERNET` only.
+3. Run the PoC after confirming the controlled SMS destination ending in `6567`.
+4. The helper connects to `127.0.0.1:8000` and submits a fresh `DeviceGuid`.
+5. The helper sends `net.mrpear.libs.intercomlib.COM_PAIR_REQUEST_RESULT` with `result=true`.
+6. DesktopSMS Lite accepts the forged pair.
+7. The helper invokes `sendsms.dsms.cmd.icl`, causing DesktopSMS Lite to send `POC TXT`.
+8. The helper invokes `search-conversations-request.dsms.cmd.icl`, and DesktopSMS Lite returns SMS-derived content.
 
-1. Install `com.frzinapps.smsforward` version 10.08.06 (build 20257).
-2. Grant the permissions required for reading and sending SMS.
-3. Open **View and Reply on PC** and start PC Sync.
-4. Note the displayed local address and TCP port (normally 8888).
+## Observed Results
 
-**Low-sensitivity LAN control**
-
-```powershell
-$cmd = '{"command":"getdualsim"}'
-$encoded = curl.exe -sS -X POST "http://PHONE_LAN_IP:8888/getData" `
-  --data-urlencode "command=$cmd"
-[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded.Trim()))
-```
-
-**Expected:** HTTP 200 and a decoded response with no authentication challenge.
-
-**Synthetic conversation read**
-
-```powershell
-$cmd = '{"command":"getchatlist","pageKey":"0","pageSize":"10"}'
-$encoded = curl.exe -sS -X POST "http://PHONE_LAN_IP:8888/getData" `
-  --data-urlencode "command=$cmd"
-[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded.Trim()))
-```
-
-**Same-device Android read**
-
-1. Install a helper app that holds only the `INTERNET` permission.
-2. With PC Sync active, probe `127.0.0.1:8888`.
-3. Invoke `getchatlist`.
-4. Observe HTTP 200 and conversation metadata with no authentication.
-
-**Controlled integrity proof**
-
-1. Use only a researcher-controlled destination.
-2. Invoke `sendmessage` with a unique marker.
-3. Confirm the marker arrives at the controlled destination.
-
-**Negative control**
-
-Stop PC Sync and repeat the TCP probe. Connection should fail.
-
-## Security Impact
-
-| Property       | Assessment | Practical Consequence |
-|----------------|------------|-----------------------|
-| Confidentiality| High       | Unauthorized retrieval of correspondents, message previews, bodies, timestamps, and read state |
-| Integrity      | High       | Unauthorized SMS transmission through the victim device/subscription |
-| Availability   | Not scored | Long-polling and unbounded history materialization create secondary risk |
-
-### Attack Scenarios
-
-- Untrusted user on the same Wi-Fi / local segment discovers TCP 8888 and reads or sends SMS without pairing.
-- Co-located Android app with only `INTERNET` permission connects to `127.0.0.1` and borrows the target’s `READ_SMS` / `SEND_SMS` capabilities.
-- On-path local network observer reads or modifies cleartext commands and Base64 responses.
-- VPN, mesh, hotspot, or other routed interface exposes the wildcard listener beyond the address shown in the UI.
-
-## Severity (CVSS v3.1)
-
-**Base Score:** 8.1 High  
-**Vector:** `AV:A/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N`
-
-| Metric | Rationale |
-|--------|-----------|
-| AV:A   | Strongest demonstrated remote path requires reachability on an adjacent/routed local network |
-| AC:L   | Endpoint and JSON command structure are deterministic |
-| PR:N   | No pairing credential, token, or authenticated session required |
-| UI:N   | After PC Sync is enabled, no further user interaction is needed |
-| S:U    | Impact occurs through the vulnerable application’s own SMS privileges |
-| C:H    | Conversation metadata and message bodies are exposed |
-| I:H    | Controlled test confirmed attacker-directed SMS transmission |
-| A:N    | Availability impact intentionally excluded from primary score |
+| Stage | Observed Result | Security Meaning |
+|---|---|---|
+| Pair | Forged approval accepted | Attacker-selected identity becomes paired |
+| Send | `StatusCode 0` | SMS submitted without helper holding `SEND_SMS` |
+| Delivery | Google Voice received `POC TXT` | Independent confirmation of actual SMS receipt |
+| Read | `POC TXT` returned | SMS-derived content exposed without helper holding `READ_SMS` |
+| Persistence | Attacker-selected `DeviceGuid` accepted | Attacker controls the paired identity |
 
 ## Root Cause
 
-| Control            | Intended Trust              | Implemented Boundary                     |
-|--------------------|-----------------------------|------------------------------------------|
-| Peer identity      | A chosen paired PC          | Any socket client that reaches the listener |
-| Listener scope     | Displayed Wi-Fi address     | Wildcard socket (LAN + loopback)         |
-| Read authorization | User-authorized PC session  | No check before `getchatlist` / `getchatmessages` |
-| Send authorization | User-authorized reply       | No per-request confirmation              |
-| Transport security | Private message channel     | Cleartext HTTP + reversible Base64       |
+The pairing-result receiver accepts an unauthenticated external result and does not securely bind approval to a legitimate pairing transaction.
 
-## Remediation Recommendations
+An external application can submit:
 
-1. Require explicit pairing before returning message data or accepting a send command. Use a high-entropy, short-lived secret displayed on the phone and bind it cryptographically to the client session.
-2. Authenticate every API request and apply command-specific authorization (read-capable clients should not automatically receive send authority).
-3. Bind to loopback by default. If LAN operation is required, demand explicit user activation, show connected clients, and expire the listener after a short idle period.
-4. Use an authenticated encrypted channel (TLS identity established during pairing). Do not treat Base64 as protection.
-5. Require phone-side confirmation for a new client, new destination, or first state-changing command. Provide an immediate revoke/disconnect control.
-6. Close the listener during service destruction, permission revocation, network transitions, logout, and explicit Stop. Verify the port is closed before reporting the feature stopped.
-7. Validate page/thread parameters, apply limits before provider materialization, use a bounded worker pool, and rate-limit authenticated clients.
-8. Return the minimum fields necessary and maintain a visible, privacy-preserving audit log of client reads and sends.
+```text
+net.mrpear.libs.intercomlib.COM_PAIR_REQUEST_RESULT
+result=true
+```
+
+for an attacker-selected identity. Once accepted, that identity can reach DesktopSMS Lite's privileged SMS commands.
+
+The vulnerable trust transition is:
+
+```text
+Untrusted local app
+      |
+      | forged pairing result
+      v
+Trusted paired identity
+      |
+      v
+Privileged SMS send / read functionality
+```
+
+## Recommended Remediation
+
+- Replace externally forgeable pairing-result broadcasts with an app-private callback.
+- Bind pairing approval to a cryptographically unpredictable, single-use nonce.
+- Authenticate local service sessions and bind them to the approved pairing transaction.
+- Reauthorize sensitive commands such as SMS send and conversation retrieval at the command boundary.
+- Do not treat possession of a user-supplied `DeviceGuid` as proof of authorization.
+
+
+## Weakness Classification
+
+- **CWE-306 - Missing Authentication for Critical Function**
+- **CWE-862 - Missing Authorization**
+
